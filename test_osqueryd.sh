@@ -13,7 +13,7 @@ sudo -E  osqueryd \
     --config_tls_endpoint /config \
     --logger_tls_endpoint /log \
     --logger_plugin tls \
-    --logger_tls_period 300 \
+    --logger_tls_period 120 \
     --enroll_tls_endpoint /enroll \
     --disable_distributed=false \
     --distributed_plugin tls \

@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 import ssl
 import rethinkdb as r
 import os
@@ -25,26 +25,29 @@ NODE_KEYS = [
 ]
 global EXAMPLE_CONFIG
 EXAMPLE_CONFIG = {
-    "schedule": {
-        "h": {"query": "select hostname from system_info;", "interval": 60},
+    'schedule': {
+        'hostname': {'query': 'select hostname from system_info;',
+                     'interval': 120, 'snapshot': False},
+        'os_version': {'query': 'select * from os_version;',
+                       'interval': 120, 'snapshot': False}
     },
-    "node_invalid": False,
+    'node_invalid': False,
 }
 global ENROLL_RESET
 ENROLL_RESET = {
-    "count": 1,
-    "max": 3,
+    'count': 1,
+    'max': 3,
 }
 global EXAMPLE_DISTRIBUTED
 EXAMPLE_DISTRIBUTED = {
-    "queries": {
-        "hostname": "select hostname from system_info;",
+    'queries': {
+        'hostname': 'select hostname from system_info;',
     }
 }
 # A 'node' variation of the TLS API uses a GET for config.
 global EXAMPLE_NODE_CONFIG
 EXAMPLE_NODE_CONFIG = EXAMPLE_CONFIG
-EXAMPLE_NODE_CONFIG["node"] = True
+EXAMPLE_NODE_CONFIG['node'] = True
 
 
 class InvalidUsage(Exception):
@@ -85,6 +88,22 @@ def teardown_request(exception):
         conn.close()
     except:
         pass
+
+# This route will show a form to perform an AJAX request
+# jQuery is loaded to execute the request and update the
+# value of the operation
+@app.route('/')
+def index():
+    return send_file('templates/index.html')
+
+# Route that will process the AJAX request, sum up two
+# integer numbers (defaulted to zero) and return the
+# result as a proper JSON response (Content-Type, etc.)
+@app.route('/_add_numbers')
+def add_numbers():
+    a = request.args.get('a', 0, type=int)
+    b = request.args.get('b', 0, type=int)
+    return jsonify(result=a + b)
 
 
 @app.route('/enroll', methods=['POST'])
@@ -127,9 +146,9 @@ def config(node=False):
 
     # This endpoint will also invalidate the node secret key (node_key)
     # after several attempts to test re-enrollment.
-    # ENROLL_RESET["count"] += 1
-    # if ENROLL_RESET["count"] % ENROLL_RESET["max"] == 0:
-    #     ENROLL_RESET["first"] = 0
+    # ENROLL_RESET['count'] += 1
+    # if ENROLL_RESET['count'] % ENROLL_RESET['max'] == 0:
+    #     ENROLL_RESET['first'] = 0
     #     return jsonify(FAILED_ENROLL_RESPONSE)
     if request.method == 'GET':
         return jsonify(EXAMPLE_NODE_CONFIG)
@@ -144,7 +163,7 @@ def distributed_read():
     if 'node_key' not in content or content['node_key'] not in NODE_KEYS:
         return jsonify(FAILED_ENROLL_RESPONSE)
     distributed_queries = {}
-    queries = r.table('queries').run(conn)
+    queries = r.table('queries').filter({'active': True}).run(conn)
     for q in queries:
         distributed_queries.setdefault(q['name'], q['query'])
     response = {
@@ -156,19 +175,36 @@ def distributed_read():
 @app.route('/distributed_write', methods=['POST'])
 def distributed_write():
     content = request.json
-    print content
+    queries = content['queries'].keys()
+    for query in queries:
+        existing_query = next(r.table('queries').filter({'name': query}).run(conn))
+        if existing_query and existing_query['active']:
+            print content
+            r.table('queries').get(existing_query['id']).update({'active': False}).run(conn)
     return jsonify({})
 
 
 @app.route('/log', methods=['POST'])
 def log():
     content = request.json
+    # Insert raw log into RDB
     r.table('logs').insert(content).run(conn)
+    # Check to see if this a result of a scheduled query...
     if content['log_type'] == 'result':
+        system_info = {}
+        nkey = content['node_key']
+        system_info['id'] = nkey
         for d in content['data']:
-            hostname = d['columns'].get('hostname', None)
-            if hostname:
-                print '{}: {}'.format(d['host_identifier'], hostname)
+            # New/updated hostname
+            if d['name'] == 'hostname':
+                hostname = d['columns'].get('hostname', None)
+                if hostname:
+                    system_info['hostname'] = hostname
+            # New/updated system_info
+            if d['name'] == 'os_version':
+                os_version = d['columns']
+                system_info['os_version'] = os_version
+        r.table('node_details').insert(system_info, conflict='update').run(conn)
     return jsonify({})
 
 

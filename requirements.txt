@@ -1,2 +1,4 @@
 Flask
 rethinkdb
+flask_socketio
+eventlet 
